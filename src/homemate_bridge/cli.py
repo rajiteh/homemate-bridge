@@ -260,66 +260,87 @@ class HomemateTCPHandler(socketserver.BaseRequestHandler):
         logger.debug("Device settings: {}".format(self.settings))
 
         while True:
-            data = self.request.recv(1024).strip()
-
-            PacketLog.record(data, PacketLog.IN, self.keys, self.client_address[0])
-
-            packet = HomematePacket(data, self.keys)
-
-            logger.debug("{} sent payload: {}".format(self.switch_id, packet.json_payload))
-
-            # Handle the ID field
-            if self.switch_id is None and packet.switch_id == ID_UNSET:
-                # Generate a new ID
-                logger.debug("Generating a new switch ID")
-                self.switch_id = ''.join(
-                    random.choice(
-                        string.ascii_lowercase + string.digits
-                    ) for _ in range(32)
-                ).encode('utf-8')
-            elif self.switch_id is None:
-                # Switch has already been assigned an ID, save it
-                logger.debug("Reusing existing ID")
-                self.switch_id = packet.switch_id
-
-            assert 'cmd' in packet.json_payload
-            assert 'serial' in packet.json_payload
-
-            if packet.json_payload['cmd'] in self.cmd_handlers:
-                response = self.cmd_handlers[packet.json_payload['cmd']](packet)
-            elif packet.json_payload['cmd'] not in CMD_SERVER_SENDS:
-                response = self.handle_default(packet)
-            else:
-                response = None
-
-            if response is not None:
-                response = self.format_response(packet, response)
-                logger.debug("Sending response {}".format(response))
-                response_packet = HomematePacket.build_packet(
-                    packet_type=packet.packet_type,
-                    key=self.keys[packet.packet_type[0]],
-                    switch_id=self.switch_id,
-                    payload=response
-                )
-
-                PacketLog.record(response_packet, PacketLog.OUT, self.keys, self.client_address[0])
-
-                # Sanity check: Does our own packet look valid?
-                #HomematePacket(response_packet, self.keys)
-                self.request.sendall(response_packet)
-
-            if self._mqtt_switch is None and packet.json_payload['cmd'] == 32:
-                # Setup the mqtt connection once we see the initial state update
-                # Otherwise, we will get the previous state too early
-                # and the switch will disconnect when we try to update it
-                self._mqtt_switch = HomemateSwitch(
-                    self,
-                    name=self.settings['name'],
-                    entity_id=self.client_address[0].replace('.', '_')
-                )
-                self.__class__._broker.add_device(self._mqtt_switch)
             
+            data = self.request.recv(1024).strip()
+            
+            #multiple packets come in at once, split on the MAGIC bytes
+            packets = data.split( MAGIC )
+            
+            for packet_data in packets[1:]:
                 
+                #add MAGIC bytes back that were lost when splitting the packets
+                packet_data = MAGIC + packet_data
+                
+                PacketLog.record(packet_data, PacketLog.IN, self.keys, self.client_address[0])
+                
+                packet = HomematePacket(packet_data, self.keys)
+
+                logger.debug("{} sent payload: {}".format(self.switch_id, packet.json_payload))
+
+                # Handle the ID field
+                if self.switch_id is None and packet.switch_id == ID_UNSET:
+                    # Generate a new ID
+                    logger.debug("Generating a new switch ID")
+                    self.switch_id = ''.join(
+                        random.choice(
+                            string.ascii_lowercase + string.digits
+                        ) for _ in range(32)
+                    ).encode('utf-8')
+                elif self.switch_id is None:
+                    # Switch has already been assigned an ID, save it
+                    logger.debug("Reusing existing ID")
+                    self.switch_id = packet.switch_id
+
+                assert 'cmd' in packet.json_payload
+                assert 'serial' in packet.json_payload
+
+                if packet.json_payload['cmd'] in self.cmd_handlers:
+                    response = self.cmd_handlers[packet.json_payload['cmd']](packet)
+                elif packet.json_payload['cmd'] not in CMD_SERVER_SENDS:
+                    response = self.handle_default(packet)
+                else:
+                    response = None
+
+                if response is not None:
+                    response = self.format_response(packet, response)
+                    logger.debug("Sending response {}".format(response))
+                    response_packet = HomematePacket.build_packet(
+                        packet_type=packet.packet_type,
+                        key=self.keys[packet.packet_type[0]],
+                        switch_id=self.switch_id,
+                        payload=response
+                    )
+
+                    PacketLog.record(response_packet, PacketLog.OUT, self.keys, self.client_address[0])
+
+                    # Sanity check: Does our own packet look valid?
+                    #HomematePacket(response_packet, self.keys)
+                    self.request.sendall(response_packet)
+
+                if self._mqtt_switch is None and packet.json_payload['cmd'] == 32:
+                    # Setup the mqtt connection once we see the initial state update
+                    # Otherwise, we will get the previous state too early
+                    # and the switch will disconnect when we try to update it
+                    self._mqtt_switch = HomemateSwitch(
+                        self,
+                        name=self.settings['name'],
+                        entity_id=self.entity_id
+                    )
+                    # Sanity check: Does our own packet look valid?
+                    #HomematePacket(response_packet, self.keys)
+                    self.request.sendall(response_packet)
+
+                if self._mqtt_switch is None and packet.json_payload['cmd'] == 32:
+                    # Setup the mqtt connection once we see the initial state update
+                    # Otherwise, we will get the previous state too early
+                    # and the switch will disconnect when we try to update it
+                    self._mqtt_switch = HomemateSwitch(
+                        self,
+                        name=self.settings['name'],
+                        entity_id=self.client_address[0].replace('.', '_')
+                    )
+                    self.__class__._broker.add_device(self._mqtt_switch)
+
     def format_response(self, packet, response_payload):
         response_payload['cmd'] = packet.json_payload['cmd']
         response_payload['serial'] = packet.json_payload['serial']
