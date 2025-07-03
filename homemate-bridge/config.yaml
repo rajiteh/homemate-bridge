@@ -1,6 +1,6 @@
 name: "Homemate Bridge"
 description: "A bridge for Homemate devices to Home Assistant"
-version: "0.0.4"
+version: "0.0.5"
 slug: "homemate_bridge"
 arch:
   - aarch64

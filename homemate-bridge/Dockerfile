@@ -10,7 +10,7 @@ RUN python3 -m venv /opt/venv \
     && pip install --upgrade pip \
     && git clone https://github.com/rajiteh/homemate-bridge.git \
     && cd homemate-bridge \
-    && git checkout 8e02102f1a870c9db28aa802fc351fc0db5bb424 \
+    && git checkout 0a879e62b74884f163a282591ca0a1c6d6218b2e \
     && pip install . \
     && pip install -r requirements.txt \
     && rm -rf .git
