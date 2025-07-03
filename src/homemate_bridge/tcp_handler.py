@@ -95,115 +95,118 @@ class HomemateTCPHandler(socketserver.BaseRequestHandler):
         except Exception as e:
             logger.error("Failed to send state change packet: {}".format(e))
             # Let's exit with an error, so the switch will reconnect
-            import sys
-            sys.exit(1)
+            try:
+                self.request.close()
+            except Exception as close_err:
+                logger.error(f"Error closing connection: {close_err}")  
+            return
 
 
         
 
     def handle(self):
-        # Close the connection if the switch doesn't send anything in 30 minutes
-        # See !1
-        self.request.settimeout(60 * 30)
-
+        # We're supposed to get a heart beat every couple o, close the connection if the switch doesn't send anything in 10 minutes
+        self.request.settimeout(60*10)
         logger.debug("Handling connection from {}".format(self.client_address[0]))
 
-        while True:
-            
-            data = self.request.recv(1024).strip()
-            
-            #multiple packets come in at once, split on the MAGIC bytes
-            packets = data.split( MAGIC )
-            
-            for packet_data in packets[1:]:
-                
-                #add MAGIC bytes back that were lost when splitting the packets
-                packet_data = MAGIC + packet_data
-                
-                PacketLog.record(packet_data, PacketLog.IN, self.keys, self.client_address[0])
-                
-                packet = HomematePacket(packet_data, self.keys)
+        try:
+            while True:
+                    #multiple packets come in at once, split on the MAGIC bytes
+                    data = self.request.recv(1024).strip()
+                    packets = data.split( MAGIC )
+                    for packet_data in packets[1:]:
+                        #add MAGIC bytes back that were lost when splitting the packets
+                        packet_data = MAGIC + packet_data
+                        self.handle_packet(packet_data)
+        except Exception as e:
+            logger.error(f"Error receiving data from {self.client_address[0]}: {e}")
+            try:
+                self.request.close()
+            except Exception as close_err:
+                logger.error(f"Error closing connection: {close_err}")
+    
+    def handle_packet(self, packet_data):
+        PacketLog.record(packet_data, PacketLog.IN, self.keys, self.client_address[0])
+        packet = HomematePacket(packet_data, self.keys)
+        logger.debug("Packet from {}: {}".format(self.client_address[0], packet.json_payload))
 
-                logger.debug("Packet from {} at {}: {}".format(self.switch_id, self.client_address[0], packet.json_payload))
+        if not self._validate_packet(packet):
+            return
 
-                # Ensure we perform a handshake first
-                if self.switch_id is None and packet.json_payload['cmd'] != 0:
-                    logger.warning("Request from {} does not have switch id discovered, ignoring packet.".format(self.client_address[0]))
-                    continue
+        if packet.switch_id == ID_UNSET:
+            self._handle_handshake_packet(packet)
+        if packet.switch_id != self.switch_id:
+            self._assign_switch_id(packet)
 
-                if packet.switch_id == ID_UNSET:
-                    logger.info("Request from {} is attempting to handshake, generating switch ID".format(self.client_address[0]))
-                    packet.switch_id = ''.join(
-                        random.choice(
-                            string.ascii_lowercase + string.ascii_uppercase + string.digits
-                        ) for _ in range(32)
-                    ).encode('utf-8')
-                
-                if packet.switch_id != self.switch_id:
-                    # Switch has already been assigned an ID, save it
-                    logger.info("Assigning switch ID {} to {}".format(packet.switch_id, self.client_address[0]))
-                    self.switch_id = packet.switch_id
+        self.serial = packet.json_payload['serial']
 
-                assert 'cmd' in packet.json_payload
-                assert 'serial' in packet.json_payload
+        if None in (self.entity_id, self.uid) and packet.json_payload['cmd'] not in [0, 6]:
+            logger.warning("Handshake not done yet, skipping packet {} from {}".format(packet.json_payload['cmd'], self.client_address[0]))
+            return
 
-                self.serial = packet.json_payload['serial']
+        response = self._build_response(packet)
+        if response is not None:
+            response = self.format_response(packet, response)
+            logger.debug("Sending response {}".format(response))
+            response_packet = HomematePacket.build_packet(
+                packet_type=packet.packet_type,
+                key=self.keys[packet.packet_type[0]],
+                switch_id=self.switch_id,
+                payload=response
+            )
+            PacketLog.record(response_packet, PacketLog.OUT, self.keys, self.client_address[0])
+            self.request.sendall(response_packet)
 
+        if packet.json_payload['cmd'] == 32: # Heartbeat
+            self._setup_mqtt_devices()
+            self.handle_energy_update()
 
-                if None in (self.entity_id, self.uid) and packet.json_payload['cmd'] not in [0,6]:
-                    # Handshake hasnt been done yet, so we don't have an entity_id
-                    logger.warning("Handshake not done yet, skipping packet {} from {}".format(packet.json_payload['cmd'], self.client_address[0]))
-                    continue
+    def _validate_packet(self, packet):
+        # Add more validation as needed
+        if 'cmd' not in packet.json_payload or 'serial' not in packet.json_payload:
+            logger.warning("Malformed packet from {}: missing 'cmd' or 'serial'".format(self.client_address[0]))
+            return False
+        return True
 
-                if packet.json_payload['cmd'] in self.cmd_handlers:
-                    response = self.cmd_handlers[packet.json_payload['cmd']](packet)
-                elif packet.json_payload['cmd'] not in CMD_SERVER_SENDS:
-                    response = self.handle_default(packet)
-                else:
-                    response = None
+    def _handle_handshake_packet(self, packet):
+        logger.info("Connection from {} is attempting to handshake, generating switch ID".format(self.client_address[0]))
+        packet.switch_id = ''.join(
+            random.choice(
+                string.ascii_lowercase + string.ascii_uppercase + string.digits
+            ) for _ in range(32)
+        ).encode('utf-8')
 
-                if response is not None:
-                    response = self.format_response(packet, response)
-                    logger.debug("Sending response {}".format(response))
-                    response_packet = HomematePacket.build_packet(
-                        packet_type=packet.packet_type,
-                        key=self.keys[packet.packet_type[0]],
-                        switch_id=self.switch_id,
-                        payload=response
-                    )
+    def _assign_switch_id(self, packet):
+        logger.info("Assigning switch ID {} to {}".format(packet.switch_id, self.client_address[0]))
+        self.switch_id = packet.switch_id
 
-                    PacketLog.record(response_packet, PacketLog.OUT, self.keys, self.client_address[0])
+    def _build_response(self, packet):
+        if packet.json_payload['cmd'] in self.cmd_handlers:
+            return self.cmd_handlers[packet.json_payload['cmd']](packet)
+        elif packet.json_payload['cmd'] not in CMD_SERVER_SENDS:
+            return self.handle_default(packet)
+        else:
+            return None
 
-                    # Sanity check: Does our own packet look valid?
-                    #HomematePacket(response_packet, self.keys)
-                    self.request.sendall(response_packet)
-                
-                if packet.json_payload['cmd'] == 32:
-                    # Setup the mqtt connection once we see the initial state update
-                    # Otherwise, we will get the previous state too early
-                    # and the switch will disconnect when we try to update it
-                    if self._mqtt_switch is None:
-                        self._mqtt_switch = HomemateSwitch(
-                            self,
-                            name=self.settings['name'],
-                            entity_id=self.entity_id,
-                            unique_id=self.uid,
-                        )
-                        self.__class__._broker.add_device(self._mqtt_switch)
-                        if self.switch_on is not None:
-                            # Sync the switch state with the MQTT switch
-                            self.__class__.switch_on.fset(self, self.switch_on)
-
-                    if self._mqtt_sensor is None:
-                        self._mqtt_sensor = HomematePowerSensor(self,
-                            name=self.settings['name'],
-                            entity_id=self.entity_id,
-                            unique_id=self.uid,
-                        )
-                        self.__class__._broker.add_device(self._mqtt_sensor)
-
-                    # Perform an energy update on heartbeat
-                    self.handle_energy_update()
+    def _setup_mqtt_devices(self):
+        if self._mqtt_switch is None:
+            self._mqtt_switch = HomemateSwitch(
+                self,
+                name=self.settings['name'],
+                entity_id=self.entity_id,
+                unique_id=self.uid,
+            )
+            self.__class__._broker.add_device(self._mqtt_switch)
+            if self.switch_on is not None:
+                self.__class__.switch_on.fset(self, self.switch_on)
+        if self._mqtt_sensor is None:
+            self._mqtt_sensor = HomematePowerSensor(
+                self,
+                name=self.settings['name'],
+                entity_id=self.entity_id,
+                unique_id=self.uid,
+            )
+            self.__class__._broker.add_device(self._mqtt_sensor)
 
     def format_response(self, packet, response_payload):
         response_payload['cmd'] = packet.json_payload['cmd']

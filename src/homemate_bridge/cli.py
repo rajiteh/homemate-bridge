@@ -9,7 +9,7 @@ import argparse
 import base64
 import os
 
-from hassdevice.hosts import SimpleMQTTHost
+from .mqtt import HomemateMQTTHost
 
 logging.getLogger().setLevel(logging.DEBUG)
 
@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--keys-file", default=None, required=False)
     parser.add_argument("--devices-file", default=None, required=False)
     parser.add_argument("--packet-log-file", default=None, required=False, help="Log packets to file")
-    SimpleMQTTHost.add_argparse_params(parser)
+    HomemateMQTTHost.add_argparse_params(parser)
     args = parser.parse_args()
 
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG, format="%(asctime)s - %(message)s")
@@ -43,12 +43,12 @@ def main():
     if args.packet_log_file is not None:
         PacketLog.enable(args.packet_log_file)
 
-    host = SimpleMQTTHost()
+    host = HomemateMQTTHost()
     host.configure_from_docker_secrets()
     host.configure_from_env()
     host.configure_from_args(args)
-
     host.start(block=False)
+   
 
     HomemateTCPHandler.set_broker(
         host

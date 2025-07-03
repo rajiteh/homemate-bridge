@@ -3,6 +3,7 @@ import json
 import struct
 import binascii
 import logging
+from hexdump import hexdump
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.backends import default_backend
@@ -37,7 +38,7 @@ class HomematePacket:
             assert self.crc == data_crc
         except AssertionError:
             logger.error("Bad packet:")
-            # hexdump(data)
+            hexdump(data)
             raise
 
         self.switch_id = data[10:42]
