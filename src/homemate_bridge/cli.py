@@ -522,11 +522,13 @@ def main():
 
     logger.debug("Listening on {}, port {}".format(args.homemate_interface, args.homemate_port))
 
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
     server = socketserver.ThreadingTCPServer((args.homemate_interface, args.homemate_port), HomemateTCPHandler)
 
     # Activate the server; this will keep running until you
     # interrupt the program with Ctrl-C
-    try:
+    try: 
         server.serve_forever()
     finally:
+        server.server_close()
         host.stop()
