@@ -37,20 +37,43 @@ class HomemateSwitch(Switch):
         self._handler.order_state_change(new_state == self.payload_on)
 
 class HomematePowerSensor(Sensor):
-    def __init__(self, handler, unique_id, **kwargs):
+
+    def __init__(self, handler, unique_id, entity_name, device_class, unit_of_measurement, clamp_positive=True, fraction_to_percent=False, **kwargs):
         self._handler = handler
         self.unique_id = unique_id
+        self.entity_name = entity_name
+        self.device_class = device_class
+        self.unit_of_measurement = unit_of_measurement
+        self.clamp_positive = clamp_positive
+        self.fraction_to_percent = fraction_to_percent
+        kwargs["entity_id"] += "_" + device_class
         super().__init__(**kwargs)
 
+    def process_value(self, value):
+        """
+        Process the value before reporting it.
+        Override this method in subclasses to customize value processing.
+        """
+        if value is None:
+            return value
+        
+        value = float(value)
+        if self.clamp_positive:
+            value = max(0.0, value)
+
+        if self.fraction_to_percent:
+            value = value * 100
+
+        return value
     @property
     def config(self):
         return {
-            'name': "Power",
+            'name': self.entity_name,
             'state_topic': self.state_topic,
             'state_class': 'measurement',
-            'device_class': 'energy',
-            'unit_of_measurement': 'W',
-            'unique_id': self.unique_id + "_power",
+            'device_class': self.device_class,
+            'unit_of_measurement': self.unit_of_measurement,
+            'unique_id': self.unique_id + "_" + self.device_class,
             'device': {
                 'identifiers': [self.unique_id],
                 'name': self.name,
@@ -58,7 +81,9 @@ class HomematePowerSensor(Sensor):
                 'model': "HOMEMATE Switch",
             }
         }
-
-    def on_energy_usage_change(self, energy_reading):
-        logger.debug("Setting new power output: {}".format(energy_reading))
-        self.payload_energy_update(energy_reading)
+    
+    def report_state(self, energy_reading):
+        if self.process_value is not None:
+            energy_reading = self.process_value(energy_reading)
+        logger.debug("Reporting state for {}: {}".format(self.entity_name, energy_reading))
+        self.client.publish(self.state_topic, energy_reading, retain=self.retain)

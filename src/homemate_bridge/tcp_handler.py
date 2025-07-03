@@ -37,11 +37,16 @@ class HomemateTCPHandler(socketserver.BaseRequestHandler):
         self.settings = None
 
         self.power = None
-        self.power_reading_time = None
+        self.energy_reading_time = None
         
         self._mqtt_switch = None
-        self._mqtt_sensor = None
-
+        self._mqtt_sensors = {
+            'power': None,
+            'powerFactor': None,
+            'current': None,
+            'voltage': None,
+            'frequency': None,
+        }
         super().__init__(*args, **kwargs)
 
     @property
@@ -191,7 +196,7 @@ class HomemateTCPHandler(socketserver.BaseRequestHandler):
     def _setup_mqtt_devices(self):
         if self._mqtt_switch is None:
             self._mqtt_switch = HomemateSwitch(
-                self,
+                handler=self,
                 name=self.settings['name'],
                 entity_id=self.entity_id,
                 unique_id=self.uid,
@@ -199,14 +204,62 @@ class HomemateTCPHandler(socketserver.BaseRequestHandler):
             self.__class__._broker.add_device(self._mqtt_switch)
             if self.switch_on is not None:
                 self.__class__.switch_on.fset(self, self.switch_on)
-        if self._mqtt_sensor is None:
-            self._mqtt_sensor = HomematePowerSensor(
-                self,
-                name=self.settings['name'],
-                entity_id=self.entity_id,
-                unique_id=self.uid,
-            )
-            self.__class__._broker.add_device(self._mqtt_sensor)
+        for sensor_type, sensor in self._mqtt_sensors.items():
+            if sensor is not None:
+                continue
+            if sensor_type == 'power':
+                self._mqtt_sensors[sensor_type] = HomematePowerSensor(
+                    handler=self,
+                    entity_name="Power",
+                    device_class='power',
+                    unit_of_measurement='W',
+                    name=self.settings['name'],
+                    entity_id=self.entity_id,
+                    unique_id=self.uid,
+                )
+            elif sensor_type == 'powerFactor':
+                self._mqtt_sensors[sensor_type] = HomematePowerSensor(
+                    handler=self,
+                    entity_name="Power Factor",
+                    device_class='power_factor',
+                    unit_of_measurement='%',
+                    fraction_to_percent=True,
+                    name=self.settings['name'],
+                    entity_id=self.entity_id,
+                    unique_id=self.uid,
+                )
+            elif sensor_type == 'current':
+                self._mqtt_sensors[sensor_type] = HomematePowerSensor(
+                    handler=self,
+                    entity_name="Current",
+                    device_class='current',
+                    unit_of_measurement='A',
+                    name=self.settings['name'],
+                    entity_id=self.entity_id,
+                    unique_id=self.uid,
+                )
+            elif sensor_type == 'voltage':
+                self._mqtt_sensors[sensor_type] = HomematePowerSensor(
+                    handler=self,
+                    entity_name="Voltage",
+                    device_class='voltage',
+                    unit_of_measurement='V',
+                    name=self.settings['name'],
+                    entity_id=self.entity_id,
+                    unique_id=self.uid,
+                )
+            elif sensor_type == 'frequency':
+                self._mqtt_sensors[sensor_type] = HomematePowerSensor(
+                    handler=self,
+                    entity_name="Frequency",
+                    device_class='frequency',
+                    unit_of_measurement='Hz',
+                    name=self.settings['name'],
+                    entity_id=self.entity_id,
+                    unique_id=self.uid,
+                )
+            self.__class__._broker.add_device(self._mqtt_sensors[sensor_type])
+        
 
     def format_response(self, packet, response_payload):
         response_payload['cmd'] = packet.json_payload['cmd']
@@ -273,7 +326,7 @@ class HomemateTCPHandler(socketserver.BaseRequestHandler):
         return self.handle_default(packet)
 
     def handle_energy_update(self, packet=None):
-        if self.power_reading_time is not None and time.time() - self.power_reading_time < 60:
+        if self.energy_reading_time is not None and time.time() - self.energy_reading_time < 60:
             # Don't request energy usage if we have a recent reading
             return
         
@@ -305,12 +358,17 @@ class HomemateTCPHandler(socketserver.BaseRequestHandler):
         logger.debug("Requesting energy usage: {}".format(payload))
         self.request.sendall(packet)
 
-    def handle_energy_reading(self, packet):         
-            if 'power' in packet.json_payload and self._mqtt_sensor is not None:
-                self.power = abs(float(packet.json_payload['power']))
-                self.power_reading_time = time.time()    
-                self._mqtt_sensor.on_energy_usage_change(self.power)
-            
+    def handle_energy_reading(self, packet):
+        for sensor_type, sensor in self._mqtt_sensors.items():
+            if sensor is None:
+                continue
+            if sensor_type in packet.json_payload:
+                energy_reading = packet.json_payload[sensor_type]
+                sensor.report_state(energy_reading)
+            else:
+                logger.warning("No {} reading in packet: {}".format(sensor_type, packet.json_payload))
+        self.energy_reading_time = time.time()    
+
     @property
     def cmd_handlers(self):
         return {
