@@ -105,5 +105,18 @@ if [ -n "$NODE_ID" ]; then
 fi
 
 # Run homemate-bridge with all arguments
-echo "Running homemate-bridge with arguments: ${ARGS[*]}"
+# Redact password in log output
+REDACTED_ARGS=()
+for arg in "${ARGS[@]}"; do
+    case "$arg" in
+    --mqtt-password=*)
+        REDACTED_ARGS+=("--mqtt-password=***")
+        ;;
+    *)
+        REDACTED_ARGS+=("$arg")
+        ;;
+    esac
+done
+
+echo "Running homemate-bridge with arguments: ${REDACTED_ARGS[*]}"
 /opt/venv/bin/homemate-bridge "${ARGS[@]}"

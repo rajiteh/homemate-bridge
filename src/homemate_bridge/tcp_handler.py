@@ -77,7 +77,6 @@ class HomemateTCPHandler(socketserver.BaseRequestHandler):
             "serial": self.serial
         }
 
-        self.serial += 1
 
         packet = HomematePacket.build_packet(
             packet_type=bytes([0x64, 0x6b]),
@@ -90,7 +89,14 @@ class HomemateTCPHandler(socketserver.BaseRequestHandler):
 
         logger.debug("Sending state change for {}, new state {}".format(self.switch_id, new_state))
         logger.debug("Payload: {}".format(payload))
-        self.request.sendall(packet)
+
+        try:
+            self.request.sendall(packet)
+        except Exception as e:
+            logger.error("Failed to send state change packet: {}".format(e))
+            # Let's exit with an error, so the switch will reconnect
+            import sys
+            sys.exit(1)
 
 
         
@@ -140,6 +146,8 @@ class HomemateTCPHandler(socketserver.BaseRequestHandler):
 
                 assert 'cmd' in packet.json_payload
                 assert 'serial' in packet.json_payload
+
+                self.serial = packet.json_payload['serial']
 
 
                 if None in (self.entity_id, self.uid) and packet.json_payload['cmd'] not in [0,6]:
@@ -196,10 +204,10 @@ class HomemateTCPHandler(socketserver.BaseRequestHandler):
 
                     # Perform an energy update on heartbeat
                     self.handle_energy_update()
-                    
+
     def format_response(self, packet, response_payload):
         response_payload['cmd'] = packet.json_payload['cmd']
-        response_payload['serial'] = packet.json_payload['serial']
+        response_payload['serial'] = self.serial
         response_payload['status'] = 0
 
         if 'uid' in packet.json_payload:
@@ -280,10 +288,9 @@ class HomemateTCPHandler(socketserver.BaseRequestHandler):
             "cmd": 128,
             "deviceId": self.switch_id.decode("utf-8"),
             "clientSessionId": self.switch_id.decode("utf-8"),
-            "serial": self.serial
+            "serial": self.serial + 1
             }
 
-        self.serial += 1
         packet = HomematePacket.build_packet(
             packet_type=bytes([0x64, 0x6b]),
             key=self.keys[0x64],
