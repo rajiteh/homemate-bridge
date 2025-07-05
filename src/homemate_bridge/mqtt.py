@@ -66,11 +66,11 @@ class HomemateMQTTHost:
             time.sleep(self._healthcheck_interval)
             if self._connected and (time.time() - self._last_pingresp > self._pingresp_timeout):
                 logger.warning("No PINGRESP received from MQTT broker in timeout window, attempting reconnect...")
+                self._last_pingresp = time.time()
                 try:
                     self.mqtt_client.disconnect()
                 except Exception as disc_e:
                     logger.error(f"Watchdog disconnect failed: {disc_e}")
-                self._last_pingresp = time.time()
 
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -95,7 +95,7 @@ class HomemateMQTTHost:
         logger.debug("MQTT log: {}".format(buf))
         if buf.startswith("Received "):
             rtype = buf.split(" ", 3)[1]
-            if rtype in ["PINGRESP", "SUBACK", "PUBLISH"]:
+            if rtype in ["PINGRESP", "SUBACK", "PUBLISH", "CONNACK"]:
                 self._last_pingresp = time.time()
 
     def start(self, block=True):
